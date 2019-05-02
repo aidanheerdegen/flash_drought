@@ -131,7 +131,6 @@ def wrap_find_fd(dataset, dtime=7, function=find_fd1D_mask, numpy=True, verbose=
 if __name__ == '__main__':
 
     idir_mrsos  = '/short/w35/dh4185/mrsos_merge/'
-    idir_mrsos  = '.'
     # CMIP5       = ['CanESM2','CSIRO-Mk3-6-0','GFDL-CM3','GFDL-ESM2G','GFDL-ESM2M','MIROC5']#
     CMIP5       = ['CanESM2',]
     seasons     = ['DJF','MAM','JJA','SON']
