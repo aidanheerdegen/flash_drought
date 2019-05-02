@@ -5,6 +5,24 @@ import time
 import numpy as np
 import xarray as xr
 
+# Set this so all attributes are propagated with operations
+xr.set_options(keep_attrs=True, enable_cftimeindex=True)
+
+def copy_encoding(target, source):
+    """
+    Try and copy all encodings from a source to a target
+    """
+    vars = list(target.coords)
+    if hasattr(target, 'data_vars'):
+        vars.extend(list(target.data_vars))
+
+    for v in vars:
+        try:
+            target[v].encoding = source[v].encoding
+        except:
+            print("Failed to copy encoding for {}".format(v))
+    target.encoding = source.encoding
+
 def find_fd1D_loop(array, dtime, percentiles, verbose=False):
     """
     Loop through all times in the array using state variables to
@@ -120,15 +138,14 @@ if __name__ == '__main__':
 
     dt = 10
 
-    # time_slice = slice('1867-01','2005-12')
-    time_slice = slice('1867-01','1910-12')
+    time_slice = slice('1867-01','2005-12')
 
     for model in CMIP5:
 
         file        = glob(os.path.join(idir_mrsos,'mrsos_day_'+model+'_historical_r1i1p1_*.nc'))[0]
         print('{}\n Read data from {}...'.format(model, file))
-        # mrsos       = xr.open_dataset(file, chunks={'lat':10,'lon':10}).sel(time=time_slice)
-        mrsos       = xr.open_dataset(file).sel(time=time_slice)
+        # Use chunking to reduce the memory overhead
+        mrsos       = xr.open_dataset(file, chunks={'lat':10,'lon':10}).sel(time=time_slice)
 
         # Create a stacked (2D) version of the dataset, which creates a new axis called latlon,
         # which is a combination of the lat and lon axes. This just adds another index, so it is
@@ -151,8 +168,7 @@ if __name__ == '__main__':
         # It is fast to make one call to quantile for the entire dataset. Takes just over 1s
         # for a 52925 x 1958 array (first dim is time, second is masked lat*lon)
         print('Pre-calculate percentiles')
-        # percentiles = mrsos_masked.load().quantile([0.1,0.3,0.4]).rename('percentiles')
-        percentiles = mrsos_masked.quantile([0.1,0.3,0.4]).rename('percentiles')
+        percentiles = mrsos_masked.load().quantile([0.1,0.3,0.4]).rename('percentiles')
 
         # Make a dataset with the rainfall data and the percentiles so we can iterate over it
         # and access the pre-computed percentiles in the same way
@@ -173,22 +189,24 @@ if __name__ == '__main__':
         # there was no data. So make set the original data to NaN, and combine with the calculated
         # data. This will add back missing lat/lon which exist in the original data, and fill the missing
         # locations with the data from the original data, which was set to NaN
-        # mrsos.mrsos.load()
+        # When data is chunked must do a load before assignment
+        mrsos.mrsos.load()
         mrsos.mrsos[:] = np.nan
-        result = result.combine_first(mrsos)
+        result = result.combine_first(mrsos.mrsos)
 
-        # Write out the sparse array which has the length of the drought at each point that
+        # Write out the result array which has the length of the drought at each point that
         # satisfied the criteria
         print('Writing result')
-        result.mrsos.encoding = mrsos.mrsos.encoding
-        result.to_netcdf(path='result.nc')
+        # result.mrsos.encoding = mrsos.mrsos.encoding
+        copy_encoding(result, mrsos)
+        result.to_netcdf(path='result_{}.nc'.format(model))
 
         # To find the number of occurences of drought by season can use a sum if all the values if
         # the length of each drought is set to 1. 
-        result_season = result.mrsos.where(result.mrsos>=1,1).groupby('time.season').sum(dim='time')
-        result_season.to_netcdf(path='result_season.nc')
+        result_season = result.where(result>=1,1).groupby('time.season').sum(dim='time')
+        result_season.to_netcdf(path='result_{}_season.nc'.format(model))
 
         # To get events per decade, add an index for decade and group by that
-        result.coords['decade'] = ds.time.dt.year % 10
+        result.coords['decade'] = result.time.dt.year % 10
         result_decade = result.groupby('decade').sum(dim='time')
-        result_decade.to_netcdf(path='result_decadal.nc')
+        result_decade.to_netcdf(path='result_{}_decadal.nc'.format(model))
