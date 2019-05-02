@@ -207,6 +207,6 @@ if __name__ == '__main__':
         result_season.to_netcdf(path='result_{}_season.nc'.format(model))
 
         # To get events per decade, add an index for decade and group by that
-        result.coords['decade'] = result.time.dt.year % 10
+        result.coords['decade'] = (result.time.dt.year // 10) * 10
         result_decade = result.groupby('decade').sum(dim='time')
         result_decade.to_netcdf(path='result_{}_decadal.nc'.format(model))
