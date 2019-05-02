@@ -1,169 +1,15 @@
-import xarray as xr
-import numpy as np
 from glob import glob
-import time
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-from mpl_toolkits.basemap import shiftgrid
-from mpl_toolkits.basemap import Basemap
-from numpy import meshgrid
-import matplotlib.colors as colors
 import os
-# import cmaps
+import time
 
-#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-# This is the main function where I try to get the timing when soil moisture drops from >=40th to <10th percentile
-# within x days (dtime). It also measures the length until soil moisture is restored to the 30th percentile or more.
-
-
-'''
-From https://gist.github.com/Fnjn/b061b28c05b5b0e768c60964d2cafa8d
-
-MIT License
-Copyright (c) 2018 Fanjin Zeng
-This work is licensed under the terms of the MIT license, see <https://opensource.org/licenses/MIT>.  
-'''
-
-def sliding_window_view(x, shape, step=None, subok=False, writeable=False):
-    """
-    Create sliding window views of the N dimensions array with the given window
-    shape. Window slides across each dimension of `x` and provides subsets of `x`
-    at any window position.
-
-    Parameters
-    ----------
-    x : ndarray
-        Array to create sliding window views.
-
-    shape : sequence of int
-        The shape of the window. Must have same length as number of input array dimensions.
-
-    step: sequence of int, optional
-        The steps of window shifts for each dimension on input array at a time.
-        If given, must have same length as number of input array dimensions.
-        Defaults to 1 on all dimensions.
-
-    subok : bool, optional
-        If True, then sub-classes will be passed-through, otherwise the returned
-        array will be forced to be a base-class array (default).
-
-    writeable : bool, optional
-        If set to False, the returned array will always be readonly view.
-        Otherwise it will return writable copies(see Notes).
-
-    Returns
-    -------
-    view : ndarray
-        Sliding window views (or copies) of `x`. view.shape = (x.shape - shape) // step + 1
-
-    See also
-    --------
-    as_strided: Create a view into the array with the given shape and strides.
-    broadcast_to: broadcast an array to a given shape.
-
-    Notes
-    -----
-    ``sliding_window_view`` create sliding window views of the N dimensions array
-    with the given window shape and its implementation based on ``as_strided``.
-    Please note that if writeable set to False, the return is views, not copies
-    of array. In this case, write operations could be unpredictable, so the return
-    views is readonly. Bear in mind, return copies (writeable=True), could possibly
-    take memory multiple amount of origin array, due to overlapping windows.
-
-    For some cases, there may be more efficient approaches, such as FFT based algo discussed in #7753.
-
-    Examples
-    --------
-    >>> i, j = np.ogrid[:3,:4]
-    >>> x = 10*i + j
-    >>> shape = (2,2)
-    >>> sliding_window_view(x, shape)
-    array([[[[ 0,  1],
-             [10, 11]],
-
-            [[ 1,  2],
-             [11, 12]],
-
-            [[ 2,  3],
-             [12, 13]]],
-
-
-           [[[10, 11],
-             [20, 21]],
-
-            [[11, 12],
-             [21, 22]],
-
-            [[12, 13],
-             [22, 23]]]])
-
-
-    >>> i, j = np.ogrid[:3,:4]
-    >>> x = 10*i + j
-    >>> shape = (2,2)
-    >>> step = (1,2)
-    >>> sliding_window_view(x, shape, step)
-    array([[[[ 0,  1],
-             [10, 11]],
-
-            [[ 2,  3],
-             [12, 13]]],
-
-
-           [[[10, 11],
-             [20, 21]],
-
-            [[12, 13],
-             [22, 23]]]])
-
-    """
-    # first convert input to array, possibly keeping subclass
-    x = np.array(x, copy=False, subok=subok)
-
-    try:
-        shape = np.array(shape, np.int)
-    except:
-        raise TypeError('`shape` must be a sequence of integer')
-    else:
-        if shape.ndim > 1:
-            raise ValueError('`shape` must be one-dimensional sequence of integer')
-        if len(x.shape) != len(shape):
-            raise ValueError("`shape` length doesn't match with input array dimensions")
-        if np.any(shape <= 0):
-            raise ValueError('`shape` cannot contain non-positive value')
-
-    if step is None:
-        step = np.ones(len(x.shape), np.intp)
-    else:
-        try:
-            step = np.array(step, np.intp)
-        except:
-            raise TypeError('`step` must be a sequence of integer')
-        else:
-            if step.ndim > 1:
-                raise ValueError('`step` must be one-dimensional sequence of integer')
-            if len(x.shape)!= len(step):
-                raise ValueError("`step` length doesn't match with input array dimensions")
-            if np.any(step <= 0):
-                raise ValueError('`step` cannot contain non-positive value')
-
-    o = (np.array(x.shape)  - shape) // step + 1 # output shape
-    if np.any(o <= 0):
-        raise ValueError('window shape cannot larger than input array shape')
-
-    strides = x.strides
-    view_strides = strides * step
-
-    view_shape = np.concatenate((o, shape), axis=0)
-    view_strides = np.concatenate((view_strides, strides), axis=0)
-    view = np.lib.stride_tricks.as_strided(x, view_shape, view_strides, subok=subok, writeable=writeable)
-
-    if writeable:
-        return view.copy()
-    else:
-        return view
+import numpy as np
+import xarray as xr
 
 def find_fd1D_loop(array, dtime, percentiles, verbose=False):
+    """
+    Loop through all times in the array using state variables to
+    track what to look for at each position
+    """
 
     last_wet_day = None
     had_dry_day = False
@@ -177,8 +23,10 @@ def find_fd1D_loop(array, dtime, percentiles, verbose=False):
             array[last_wet_day] = i - last_wet_day
             if verbose:
                 print('Recorded wet day lag {} at {}'.format(array[last_wet_day], last_wet_day))
+            # Set this flag as drought now broken
+            had_dry_day = False
         elif last_wet_day is not None and not had_dry_day: 
-            if (i - last_wet_day) < dtime:
+            if (i - last_wet_day) <= dtime:
                 if val < percentiles[0]:
                     # Have had a wet day and found dry day within dtime
                     had_dry_day = True
@@ -198,12 +46,17 @@ def find_fd1D_loop(array, dtime, percentiles, verbose=False):
                 print('Reset last wet day: {} {}'.format(i,val))
 
         # Set all values of array to zero once their value has been checked
-        # Locations matching wet days will be back-filed above
+        # Locations matching wet days will be back-filled above
         array[i] = 0
 
     return array
 
 def find_fd1D_mask(array, dtime, percentiles, verbose=False):
+
+    """
+    Use masks to determine the indices of times that match the
+    initial criteria, and only loop through a list of those positions
+    """
 
     indices = np.arange(len(array))
 
@@ -217,7 +70,7 @@ def find_fd1D_mask(array, dtime, percentiles, verbose=False):
     for ind, windex in enumerate(wet):
         if verbose: print('windex',windex)
         # Check for dry spell within dtime
-        for i in range(windex+1,windex+dtime+1):
+        for i in range(windex+1,min(windex+dtime+1,len(array))):
             if array[i] >= percentiles[2]:
                 # Found another wet cell before a dry cell
                 if verbose: print('found wet cell, abort search')
@@ -241,108 +94,101 @@ def find_fd1D_mask(array, dtime, percentiles, verbose=False):
     return array
 
 
+def wrap_find_fd(dataset, dtime=7, function=find_fd1D_mask, numpy=True, verbose=False):
+    """
+    Call the correct find function with precomputed percentiles 
+    """
+    if numpy:
+        # Pass data as underlying numpy array (.values). A bug in numpy (currently 1.16.2)
+        # makes this operation 500x faster if numpy array passed directly. This loses the
+        # xarray metadata, so need to use the .copy function explicitly
+        # https://github.com/numpy/numpy/issues/8562
+        result = dataset.mrsos.copy(data=function(dataset.mrsos.values, dtime, dataset.percentiles.values))
+    else:
+        result = function(dataset.mrsos, dtime, dataset.percentiles)
 
+    return result
 
-"""
-# In the end I want to count the events depending on the season to get a return array of size 4 for each grid cell
-# with the amount of events occured per season. The 'length' array saved the duration of each event and will vary in size
-# for each grid cell. I'm not sure yet how to get a uniform output for this for each grid cell to save it into lat,lon array.
-
-    seas_countfd = np.zeros(4)
-    for seas, i in enumerate(seasons):
-
-        seas_countfd[i] = array[fd_onset_index].sel(time=(array.time.dt.season==seas)).sum()
-
-    return seas_countfd, length
-"""
-#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-# This is the previous funtion I was using which works on a 3D array but does not account for event length and counted
-# events twice when soil moisture depleted too quickly and the statement (from >=40th to <10th percentile within x days)
-# was true for two consecutive days.
-
-def find_fd(x,dtime,percentile_low,percentile_norm):
-    norm_x  = (x - x.min(dim='time')) / (x.max(dim='time') - x.min(dim='time'))
-    x_low   = np.nanpercentile(norm_x,percentile_low,axis=0, keepdims=True)[0]
-    x_norm  = np.nanpercentile(norm_x,percentile_norm,axis=0, keepdims=True)[0]
-
-    mask    = np.ma.masked_greater_equal(norm_x[:-dtime,:,:],x_norm)
-    mask2   = np.ma.masked_less(norm_x[dtime:,:,:],x_low)
-    mask_fd = (mask.mask & mask2.mask)
-    matrix  = np.zeros(mask_fd.shape)
-
-    for t in range(1,mask_fd.shape[0]):
-        matrix[t,:,:] = np.where(mask_fd[t,:,:] > mask_fd[t-1,:,:],1,0)
-
-    matrix = xr.DataArray(matrix,coords=[x['time'][dtime:],x['lat'],x['lon']],dims=['time','lat','lon'])
-    return matrix
-#+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 if __name__ == '__main__':
 
     idir_mrsos  = '/short/w35/dh4185/mrsos_merge/'
-    CMIP5       = ['CanESM2','CSIRO-Mk3-6-0','GFDL-CM3','GFDL-ESM2G','GFDL-ESM2M','MIROC5']#
+    idir_mrsos  = '.'
+    # CMIP5       = ['CanESM2','CSIRO-Mk3-6-0','GFDL-CM3','GFDL-ESM2G','GFDL-ESM2M','MIROC5']#
+    CMIP5       = ['CanESM2',]
     seasons     = ['DJF','MAM','JJA','SON']
 
     dt = 10
 
-    for i, model in enumerate(CMIP5):
-        print(model+'\nRead data...')
+    # time_slice = slice('1867-01','2005-12')
+    time_slice = slice('1867-01','1910-12')
 
-        file        = glob(idir_mrsos+'mrsos_day_'+model+'_historical_r1i1p1_*.nc')[0]
-        # mrsos       = xr.open_dataset(file).sel(time=slice('1867-01','2005-12'))
-        mrsos       = xr.open_dataset(file).sel(time=slice('1867-01','1900-12'))
+    for model in CMIP5:
 
-        find_fd1D(mrsos.mrsos.isel(lon=30,lat=40))
+        file        = glob(os.path.join(idir_mrsos,'mrsos_day_'+model+'_historical_r1i1p1_*.nc'))[0]
+        print('{}\n Read data from {}...'.format(model, file))
+        # mrsos       = xr.open_dataset(file, chunks={'lat':10,'lon':10}).sel(time=time_slice)
+        mrsos       = xr.open_dataset(file).sel(time=time_slice)
 
-        result      = find_fd(mrsos['mrsos'],dt,low,norm)
-        result_seas = xr.DataArray(np.zeros((len(seasons),mrsos.shape[1],mrsos.shape[2])),dims=['season','lat','lon'], coords=[seasons, mrsos['lat'], mrsos['lon']])
+        # Create a stacked (2D) version of the dataset, which creates a new axis called latlon,
+        # which is a combination of the lat and lon axes. This just adds another index, so it is
+        # a fast operation. Do this to make it simple to mask the data later
+        mrsos_stack = mrsos.mrsos.stack(latlon=('lat','lon'))
 
-        # go through each lat and lon to get an 1D array for the find_fd1D function
-        for lt in range(len(mrsos['lat'])):
-            for ln in range(len(mrsos['lon'])):
+        print('Size of raw data {}'.format(mrsos_stack.shape))
 
-                results_seas[:,lt,ln], length = find_fd1D(mrsos['mrsos'],dt)
+        # Get the max and min value in time at every point in the new stacked latlon axis
+        mrsos_max = mrsos_stack.max(dim='time')
+        mrsos_min = mrsos_stack.min(dim='time')
 
-            result_seas[j,:,:] = result.sel(time=(result.time.dt.season==seas)).sum(dim='time')
+        # Make a masked version of the data and pull out only those pixels where the value changes 
+        # over time. In polar regions it is set to the same value constantly, and in oceans it 
+        # is always zero. This reduces the data to 23% of the original
+        mrsos_masked = mrsos_stack.where(mrsos_max != mrsos_min, drop=True)
 
-        # get events per decade
-        result_seas = result_seas/(mrsos['mrsos'].shape[0]/365/10)
+        print('Size of masked data {}'.format(mrsos_masked.shape))
 
-        # apply land sea mask
-        mask_file   = xr.open_dataset('/short/w35/dh4185/landsea/topo_fx_'+model+'_historical_r0i0p0.nc').squeeze(dim='time')
-        mask        = np.ma.masked_greater(mask_file['topo'],-.1)
-        result_seas = result_seas.where(mask.mask)
+        # It is fast to make one call to quantile for the entire dataset. Takes just over 1s
+        # for a 52925 x 1958 array (first dim is time, second is masked lat*lon)
+        print('Pre-calculate percentiles')
+        # percentiles = mrsos_masked.load().quantile([0.1,0.3,0.4]).rename('percentiles')
+        percentiles = mrsos_masked.quantile([0.1,0.3,0.4]).rename('percentiles')
 
+        # Make a dataset with the rainfall data and the percentiles so we can iterate over it
+        # and access the pre-computed percentiles in the same way
+        mrsos_perc = xr.merge([mrsos_masked, percentiles])
 
-    #+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-    # PLOTTING
+        print('Find droughts')
+        # Use a groupby here which effectively just loops over all the locations and applies
+        # the wrap_find_fd function
+        result = mrsos_perc.groupby('latlon').apply(wrap_find_fd, dtime=dt)
 
-        subplots = [221,222,223,224]
+        # Make the dataset 3D again by unstacking the latlon index
+        result = result.unstack()
 
-        fig = plt.figure(figsize=[17,7])
-        map = Basemap(llcrnrlon=-180.,llcrnrlat=-60.,urcrnrlon=180.,urcrnrlat=78.,projection='cyl',lat_0=0, lon_0=0)
-        x = result['lon'].data
-        y = result['lat'].data
-        xx, yy = meshgrid(x, y)
-        # cmap=cmaps.MPL_s3pcpn
-        plt.suptitle('Seasonal number of flash droughts for '+model+' mrsos (1868-2005)\nThreshold: SM from >='+str(norm)+'th prctl to <'+str(low)+'th prctl in '+str(dt)+' days')
+        # Now some tidying. The longitude axis loses it ordering in the above calls, so re-sort
+        result = result.unstack().reindex(lon=sorted(result.lon.values))
 
-        for j, plot in enumerate(subplots):
-            ax = fig.add_subplot(plot)
-            cs = map.contourf(xx, yy, result_seas[j,:,:],latlon=True,cmap=cmap,levels=np.linspace(-1,40,41),extend='max')
-            cb = map.colorbar(location='right',label='FD events per decade')
-            # cs.cmap.set_over("white")
-            cb.set_ticks(np.round(np.arange(0,42,2),1))
-            cb.set_ticklabels(np.round(np.arange(0,42,2),1))
-            map.drawparallels(range(-90, 90, 30),labels=[1,0,0,0],fontsize=10)
-            map.drawmeridians(range(-180, 180, 45),labels=[0,0,0,1],fontsize=10)
-            map.drawcoastlines()
-            textstr = r'$\mathrm{max}=%.2f$' % (np.nanmax(result_seas[j,:,:]))
-            props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-            ax.text(0.02, 0.13, textstr, transform=ax.transAxes, fontsize=12,verticalalignment='top', bbox=props)
-            plt.title(seasons[j])
+        # Because it was masked, there are also whole bands of lon/lat missing in the output, where
+        # there was no data. So make set the original data to NaN, and combine with the calculated
+        # data. This will add back missing lat/lon which exist in the original data, and fill the missing
+        # locations with the data from the original data, which was set to NaN
+        # mrsos.mrsos.load()
+        mrsos.mrsos[:] = np.nan
+        result = result.combine_first(mrsos)
 
-        plt.tight_layout()
-        # plt.show()
-        plt.savefig('/short/w35/dh4185/EDDI/corr/plots/seas_flashdrought_'+model+'_low'+str(low)+'_norm'+str(norm)+'_dt'+str(dt)+'.png')
-        print(model+' done.')
+        # Write out the sparse array which has the length of the drought at each point that
+        # satisfied the criteria
+        print('Writing result')
+        result.mrsos.encoding = mrsos.mrsos.encoding
+        result.to_netcdf(path='result.nc')
+
+        # To find the number of occurences of drought by season can use a sum if all the values if
+        # the length of each drought is set to 1. 
+        result_season = result.mrsos.where(result.mrsos>=1,1).groupby('time.season').sum(dim='time')
+        result_season.to_netcdf(path='result_season.nc')
+
+        # To get events per decade, add an index for decade and group by that
+        result.coords['decade'] = ds.time.dt.year % 10
+        result_decade = result.groupby('decade').sum(dim='time')
+        result_decade.to_netcdf(path='result_decadal.nc')
