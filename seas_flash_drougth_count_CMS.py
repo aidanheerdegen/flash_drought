@@ -165,7 +165,7 @@ if __name__ == '__main__':
         # It is fast to make one call to quantile for the entire dataset. Takes just over 1s
         # for a 52925 x 1958 array (first dim is time, second is masked lat*lon)
         print('Pre-calculate percentiles')
-        percentiles = mrsos_masked.load().quantile([0.1,0.3,0.4]).rename('percentiles')
+        percentiles = mrsos_masked.load().quantile([0.1,0.3,0.4], dim='time').rename('percentiles')
 
         # Make a dataset with the rainfall data and the percentiles so we can iterate over it
         # and access the pre-computed percentiles in the same way
