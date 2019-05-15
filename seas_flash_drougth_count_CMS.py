@@ -130,7 +130,8 @@ def wrap_find_fd(dataset, dtime=7, function=find_fd1D_mask, numpy=True, verbose=
 
 if __name__ == '__main__':
 
-    idir_mrsos  = '/short/w35/dh4185/mrsos_merge/'
+    # idir_mrsos  = '/short/w35/dh4185/mrsos_merge/'
+    idir_mrsos  = 'mrsos_merge/'
     CMIP5       = ['CanESM2','CSIRO-Mk3-6-0','GFDL-CM3','GFDL-ESM2G','GFDL-ESM2M','MIROC5']
 
     dt = 10
@@ -174,7 +175,7 @@ if __name__ == '__main__':
         print('Find droughts')
         # Use a groupby here which effectively just loops over all the locations and applies
         # the wrap_find_fd function
-        result = mrsos_perc.groupby('latlon').apply(wrap_find_fd, dtime=dt)
+        result = mrsos_perc.load().groupby('latlon').apply(wrap_find_fd, dtime=dt)
 
         # Make the dataset 3D again by unstacking the latlon index
         result = result.unstack()
