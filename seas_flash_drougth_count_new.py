@@ -1,10 +1,18 @@
 from glob import glob
 import os
+import sys
 import time
 
 import numpy as np
 import xarray as xr
-start_time   = time.time()
+
+start_time = time.time()
+last_time  = start_time
+def laptime():
+    global last_time
+    now = time.time()
+    print("--- {:.2f} seconds ---".format(now - last_time))
+    last_time = now
 
 # Set this so all attributes are propagated with operations
 xr.set_options(keep_attrs=True, enable_cftimeindex=True)
@@ -67,7 +75,7 @@ def find_fd1D_mask(array, dtime, percentiles, verbose=False):
 
 
 
-def wrap_find_fd(dataset, dtime=7, function=find_fd1D_mask, numpy=True, verbose=False):
+def wrap_find_fd(dataset, varname, dtime=7, function=find_fd1D_mask, numpy=True, verbose=False):
     """
     Call the correct find function with precomputed percentiles
     """
@@ -83,11 +91,17 @@ def wrap_find_fd(dataset, dtime=7, function=find_fd1D_mask, numpy=True, verbose=
     return result
 
 
-if __name__ == '__main__':
+def main(models):
 
     idir_SSI  = '/g/data/w35/dh4185/data/SSI/'
-    odir        = '/g/data/w35/dh4185/data/fd_count/prctl_104040_dt14/'
-    CMIP5       = ['CanESM2','CSIRO-Mk3-6-0','GFDL-CM3','GFDL-ESM2G','GFDL-ESM2M','MIROC5']
+    odir      = '/g/data/w35/dh4185/data/fd_count/prctl_104040_dt14/'
+
+    # Make sure the output directory exists, if it does will error, so 
+    # wrap in try/except
+    try:
+        os.makedirs(odir)
+    except:
+        pass
 
     dt    = 14
     prctl = [0.1,0.4,0.4]
@@ -96,7 +110,7 @@ if __name__ == '__main__':
 
     time_slice = slice('1867-01','2005-12')
 
-    for model in CMIP5:
+    for model in models:
 
         if os.path.isfile('{}result_FDcount_dt{}_{}.nc'.format(odir,dt,model)):
             print('File exists.')
@@ -104,7 +118,7 @@ if __name__ == '__main__':
             file        = glob(os.path.join(idir_SSI,'SSI_agg{}d_{}_historical_r1i1p1_*.nc'.format(ndays,model)))[0]
             print('{}\n Read data from {}...'.format(model, file))
             # Use chunking to reduce the memory overhead
-            mrsos       = xr.open_dataset(file, chunks={'lat':10,'lon':10}).sel(time=time_slice)
+            mrsos       = xr.open_dataset(file).sel(time=time_slice)
 
             # Create a stacked (2D) version of the dataset, which creates a new axis called latlon,
             # which is a combination of the lat and lon axes. This just adds another index, so it is
@@ -127,41 +141,47 @@ if __name__ == '__main__':
             # It is fast to make one call to quantile for the entire dataset. Takes just over 1s
             # for a 52925 x 1958 array (first dim is time, second is masked lat*lon)
             print('Pre-calculate percentiles')
-            print("--- %s seconds ---" % (time.time() - start_time))
             percentiles = mrsos_masked.load().quantile(prctl, dim='time').rename('percentiles')
+            laptime()
 
             # Make a dataset with the rainfall data and the percentiles so we can iterate over it
             # and access the pre-computed percentiles in the same way
             mrsos_perc = xr.merge([mrsos_masked, percentiles])
 
-            print('Find droughts')
-            print("--- %s seconds ---" % (time.time() - start_time))
             # Use a groupby here which effectively just loops over all the locations and applies
             # the wrap_find_fd function
-            result = mrsos_perc.groupby('latlon').apply(wrap_find_fd, dtime=dt)
+            print('Find droughts')
+            result = mrsos_perc.groupby('latlon').apply(wrap_find_fd, dtime=dt, varname=varname)
+            laptime()
 
             # Make the dataset 3D again by unstacking the latlon index
+            print('Unstack')
             result = result.unstack()
+            laptime()
 
             # Now some tidying. The longitude axis loses it ordering in the above calls, so re-sort
+            print('Sort axis')
             result = result.unstack().reindex(lon=sorted(result.lon.values))
+            laptime()
 
             # Because it was masked, there are also whole bands of lon/lat missing in the output, where
             # there was no data. So make set the original data to NaN, and combine with the calculated
             # data. This will add back missing lat/lon which exist in the original data, and fill the missing
             # locations with the data from the original data, which was set to NaN
             # When data is chunked must do a load before assignment
+            print('Fill in missing bands')
             mrsos[varname].load()
             mrsos[varname][:] = np.nan
             result = result.combine_first(mrsos[varname])
+            laptime()
 
             # Write out the result array which has the length of the drought at each point that
             # satisfied the criteria
             print('Writing result')
-            print("--- %s seconds ---" % (time.time() - start_time))
             # result.mrsos.encoding = mrsos[varname].encoding
             copy_encoding(result, mrsos)
-            result.to_netcdf(path='{}result_FDcount_dt{}_{}.nc'.format(odir,dt,model))
+            result.to_netcdf(path=os.path.join(odir,'result_FDcount_dt{}_{}.nc'.format(dt,model)))
+            laptime()
 
             # # To find the number of occurences of drought by season can use a sum if all the values if
             # # the length of each drought is set to 1.
@@ -172,3 +192,9 @@ if __name__ == '__main__':
             # result.coords['decade'] = (result.time.dt.year // 10) * 10
             # result_decade = result.groupby('decade').sum(dim='time')
             # result_decade.to_netcdf(path='{}result_FDcount_dt{}_{}_decadal.nc'.format(odir,dt,model))
+
+if __name__ == '__main__':
+
+    # Pass model names as arguments on command line. Possible values are
+    # 'CanESM2','CSIRO-Mk3-6-0','GFDL-CM3','GFDL-ESM2G','GFDL-ESM2M','MIROC5'
+    main(sys.argv[1:])
